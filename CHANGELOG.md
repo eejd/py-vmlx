@@ -4,6 +4,10 @@ All notable changes to vMLX Engine will be documented in this file.
 
 ---
 
+## [1.6.82-local03]
+
+- Support mlx-lm 0.32 cache imports, native array-cache merging and stop-sequence batching.
+
 ## [1.6.82] - 2026-10-27
 
 - Add DeepSeek-V4.1-Flash-1017 serving for compatible JANG affine and JANGHT bundles, with native Engram, image inputs, DSML tool calls and model-derived sampling defaults.

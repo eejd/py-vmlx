@@ -6,26 +6,15 @@ This module enables continuous batching for models that use non-KVCache layers
 (MambaCache, ArraysCache) -- primarily hybrid SSM+attention architectures like
 Qwen3.5-VL, Mamba, and Jamba.
 
-PROBLEM
--------
-mlx-lm's BatchGenerator assumes all cache layers are KVCache with ``extract()``
-and ``merge()`` methods. But MambaCache (extends ArraysCache) lacks ``extract()``,
-and ``_make_cache()`` / ``_merge_caches()`` don't handle non-KV types. This causes
-crashes when batching hybrid models.
+mlx-lm 0.32 creates per-request caches with ``make_prompt_cache`` and
+provides merge and batch operations for its native cache classes.
+``BatchMambaCache`` preserves support for vMLX's custom SSM cache, while
+``patch_mlx_lm_for_mamba()`` extends cache merging for vMLX-specific and
+quantized cache types and delegates native ArraysCache merging to mlx-lm.
+It also preserves the single-sequence fast path and promotes caches when
+independent sequences are combined.
 
-SOLUTION
---------
-1. ``BatchMambaCache``: Batch-aware wrapper around MambaCache with:
-   - ``extract(idx)`` -- extract single request's state from batch
-   - ``merge(caches)`` -- concatenate multiple MambaCache into batch
-   - ``filter(batch_indices)`` -- filter batch AND left_padding together
-
-2. ``patch_mlx_lm_for_mamba()``: Monkey-patches mlx-lm's generate module:
-   - ``_make_cache`` -- handles MambaCache -> BatchMambaCache conversion
-   - ``_merge_caches`` -- handles all cache types including QuantizedKVCache,
-     MambaCache, ArraysCache, RotatingKVCache, and CacheList (recursive)
-
-3. ``ensure_mamba_support()`` -- idempotent entry point (called by scheduler)
+``ensure_mamba_support()`` is the idempotent scheduler entry point.
 
 INTEGRATION
 -----------
@@ -635,12 +624,7 @@ class BatchMambaCache(MambaCache):
 
 
 def patch_mlx_lm_for_mamba():
-    """
-    Patch mlx-lm to support MambaCache in BatchGenerator.
-
-    This modifies the _make_cache function to handle MambaCache by
-    converting it to BatchMambaCache.
-    """
+    """Extend mlx-lm's cache merge and extension for vMLX cache types."""
     import importlib
 
     gen_module = importlib.import_module("mlx_lm.generate")
@@ -662,7 +646,7 @@ def patch_mlx_lm_for_mamba():
         from mlx_lm.models.cache import MambaCache as OrigMambaCache
     except ImportError:
         OrigMambaCache = ArraysCache  # Fallback
-    from mlx_lm.generate import BatchKVCache, BatchRotatingKVCache
+    from mlx_lm.models.cache import BatchKVCache, BatchRotatingKVCache
 
     # Patch ArraysCache.make_mask to accept **kwargs.
     # mlx-lm's base.py calls make_mask(N, return_array=..., window_size=...)
@@ -675,54 +659,6 @@ def patch_mlx_lm_for_mamba():
         ArraysCache.make_mask = _ac_make_mask_compat
         logger.debug("Patched ArraysCache.make_mask to accept **kwargs")
 
-    # Store original function
-    _original_make_cache = gen_module._make_cache
-
-    def _patched_make_cache(model, left_padding, max_kv_size=None):
-        """
-        Convert a list of regular caches into their corresponding
-        batch-aware caches, with support for MambaCache.
-
-        Args:
-            model: The model to create cache for
-            left_padding: Left padding for batch
-            max_kv_size: Maximum KV cache size (mlx-lm 0.30.6+)
-        """
-
-        def to_batch_cache(c):
-            if type(c).__name__ == "ZayaNoStateCache":
-                return type(c)()
-            if _is_tq_batch_api(c):
-                return c
-            if _is_kv_like(c):
-                return BatchKVCache(left_padding)
-            elif _QuantizedKVCache is not None and isinstance(c, _QuantizedKVCache):
-                # QuantizedKVCache → BatchKVCache (dequantize at batch boundary)
-                return BatchKVCache(left_padding)
-            elif isinstance(c, OrigMambaCache):
-                # Handle MambaCache/ArraysCache -> BatchMambaCache
-                num_arrays = len(c.cache) if c.cache else 2
-                return BatchMambaCache(size=num_arrays, left_padding=left_padding)
-            elif isinstance(c, RotatingKVCache):
-                return BatchRotatingKVCache(c.max_size, left_padding)
-            elif isinstance(c, CacheList):
-                return CacheList(*(to_batch_cache(sub_c) for sub_c in c.caches))
-            else:
-                raise ValueError(f"{type(c)} does not yet support batching")
-
-        if hasattr(model, "make_cache"):
-            cache = model.make_cache()
-            return [to_batch_cache(c) for c in cache]
-        elif max_kv_size is not None:
-            # mlx-lm 0.30.6+: Use rotating cache with max_kv_size
-            return [
-                BatchRotatingKVCache(max_kv_size, left_padding) for _ in model.layers
-            ]
-        else:
-            return [BatchKVCache(left_padding) for _ in model.layers]
-
-    # Patch the module
-    gen_module._make_cache = _patched_make_cache
 
     # Also patch _merge_caches to handle BatchMambaCache
     _original_merge_caches = gen_module._merge_caches
@@ -807,24 +743,12 @@ def patch_mlx_lm_for_mamba():
                 cache = BatchKVCache.merge(to_merge)
             elif isinstance(layer_cache, RotatingKVCache):
                 cache = BatchRotatingKVCache.merge([c[i] for c in caches])
-            elif isinstance(layer_cache, (OrigMambaCache, BatchMambaCache)):
+            elif isinstance(layer_cache, BatchMambaCache):
                 cache = BatchMambaCache.merge([c[i] for c in caches])
             elif isinstance(layer_cache, ArraysCache):
-                # Generic ArraysCache: merge by concatenating arrays
-                num_arrays = len(layer_cache.cache) if layer_cache.cache else 0
-                merged = type(layer_cache)(num_arrays)
-                merged.cache = []
-                for j in range(num_arrays):
-                    arrays = [
-                        c[i].cache[j]
-                        for c in caches
-                        if c[i].cache[j] is not None
-                    ]
-                    if arrays:
-                        merged.cache.append(mx.concatenate(arrays, axis=0))
-                    else:
-                        merged.cache.append(None)
-                cache = merged
+                cache = type(layer_cache).merge([c[i] for c in caches])
+            elif isinstance(layer_cache, OrigMambaCache):
+                cache = BatchMambaCache.merge([c[i] for c in caches])
             elif isinstance(layer_cache, CacheList):
                 # CacheList: merge each sub-cache independently
                 num_sub = len(layer_cache.caches)

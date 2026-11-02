@@ -3925,7 +3925,7 @@ class Scheduler:
                 generator = BatchGenerator(
                     model=self.model,
                     max_tokens=sampling_params.max_tokens,
-                    stop_tokens=stop_tokens,
+                    stop_tokens=[[token] for token in stop_tokens],
                     sampler=sampler,
                     logits_processors=None,
                     prefill_batch_size=self.config.prefill_batch_size,
@@ -4003,7 +4003,7 @@ class Scheduler:
         return BatchGenerator(
             model=self.model,
             max_tokens=sampling_params.max_tokens,
-            stop_tokens=stop_tokens,
+            stop_tokens=[[token] for token in stop_tokens],
             sampler=sampler,
             logits_processors=None,
             prefill_batch_size=self.config.prefill_batch_size,

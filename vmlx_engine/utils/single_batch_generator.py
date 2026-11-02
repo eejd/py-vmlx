@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Sequence, Union
 
 import mlx.core as mx
-from mlx_lm.generate import SequenceStateMachine
+from ..state_machine import SequenceStateMachine
 from mlx_lm.models import cache as mlx_cache
 from mlx_lm.models.cache import TokenBuffer
 
