@@ -80,3 +80,23 @@ def test_install_skips_missing_optional_patch_source_without_error_output(
     captured = capsys.readouterr()
     assert "patched source not found" not in captured.err
     assert "patched source not found" not in captured.out
+
+
+def test_install_never_rewrites_mlx_lm_without_explicit_opt_in(monkeypatch, tmp_path):
+    mod = _load_patch_module()
+    target = tmp_path / "deepseek_v3.py"
+    target.write_text("# unpatched\n")
+    source = tmp_path / "deepseek_v3_patched.py"
+    source.write_text("# JANG fast fix\n")
+    monkeypatch.delenv("VMLX_PATCH_MLX_LM_FILES", raising=False)
+    monkeypatch.setattr(mod, "is_patched", lambda: False)
+    monkeypatch.setattr(mod, "_locate_target", lambda: target)
+    monkeypatch.setattr(mod, "_local_patch_source", lambda: source)
+
+    assert mod.install() is False
+    assert target.read_text() == "# unpatched\n"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["deepseek_v3.py", "deepseek_v3_patched.py"]
+
+    monkeypatch.setenv("VMLX_PATCH_MLX_LM_FILES", "1")
+    monkeypatch.setattr(mod, "_apply_local_patch", lambda t, s: True)
+    assert mod.install() is True

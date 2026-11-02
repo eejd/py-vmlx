@@ -33,6 +33,7 @@ packaged app bundle.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from importlib import import_module
 from importlib.util import find_spec
@@ -91,6 +92,14 @@ def install() -> bool:
             "seeing this message inside /Applications/vMLX.app, please "
             "file a bug — the build-time patch step was skipped.",
             target,
+        )
+        return False
+    # Packaged installs: mlx_lm belongs to another package; never rewrite its files
+    # as an import-time side effect. Opt in explicitly with VMLX_PATCH_MLX_LM_FILES=1.
+    if os.environ.get("VMLX_PATCH_MLX_LM_FILES") != "1":
+        logger.info(
+            "Kimi MLA fp32-SDPA patch not active; mlx_lm file patching is disabled "
+            "(set VMLX_PATCH_MLX_LM_FILES=1 to patch %s)", target,
         )
         return False
     local_patch_source = _local_patch_source()
