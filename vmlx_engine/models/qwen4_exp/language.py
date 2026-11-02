@@ -1586,7 +1586,8 @@ def _exact_mrope_cos_sin(
         )
     pos = position_ids.astype(mx.float32)[..., None]  # [3, B, S, 1]
     freqs = pos * rotary.inv_freq.astype(mx.float32)  # [3, B, S, F]
-    freqs = rotary.apply_interleaved_mrope(freqs, rotary.mrope_section)
+    from mlx_vlm.models.rope_utils import apply_mrope_frequency_layout
+    freqs = apply_mrope_frequency_layout(freqs, rotary.mrope_section)
     emb = mx.concatenate([freqs, freqs], axis=-1)
     return mx.cos(emb).astype(dtype), mx.sin(emb).astype(dtype)
 

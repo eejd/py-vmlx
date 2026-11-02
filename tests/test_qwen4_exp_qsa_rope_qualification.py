@@ -52,6 +52,20 @@ def _reference(pos):
     return np.cos(emb)[0], np.sin(emb)[0]
 
 
+def test_current_mlx_vlm_rotary_prefill_against_reference():
+    from mlx_vlm.models.qwen3_5.language import Qwen3_5RotaryEmbedding as SharedRotary
+    from vmlx_engine.metal.row_exact_qmv import rotary_rows_like_decode
+
+    rotary = SharedRotary(64, max_position_embeddings=1_048_576,
+                          base=10_000_000.0, mrope_section=[11, 11, 10])
+    rng = np.random.default_rng(42)
+    pos = mx.array(rng.integers(0, 2048, size=(3, 1, 4), dtype=np.int32))
+    reference = _reference(pos)
+    for actual in (_exact_mrope_cos_sin(rotary, pos, mx.float32),
+                   rotary_rows_like_decode(rotary, pos)):
+        for result, expected in zip(actual, reference):
+            np.testing.assert_allclose(np.asarray(result)[0], expected, atol=0.001, rtol=0)
+
 @pytest.mark.parametrize("start", [0, 12, 2047, 26_554, 131_072, 1_000_000])
 @pytest.mark.parametrize("media", [False, True])
 def test_exact_angles_are_shape_independent_and_track_float64(start, media):

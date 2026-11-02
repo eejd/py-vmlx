@@ -902,7 +902,8 @@ def rotary_rows_like_decode(rotary, position_ids: mx.array, x=None) -> tuple[mx.
     )
     pos = position_ids.astype(mx.float32)[..., None, None]  # [3, B, S, 1, 1]
     freqs = (inv @ pos).reshape(axes, batch, rows, width)
-    freqs = rotary.apply_interleaved_mrope(freqs, rotary.mrope_section)
+    from mlx_vlm.models.rope_utils import apply_mrope_frequency_layout
+    freqs = apply_mrope_frequency_layout(freqs, rotary.mrope_section)
     emb = mx.concatenate([freqs, freqs], axis=-1)
     cos, sin = mx.cos(emb), mx.sin(emb)
     if x is not None:
